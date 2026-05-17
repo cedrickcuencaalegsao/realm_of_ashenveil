@@ -157,11 +157,10 @@ fn spawn_world(
             world_map.tiles.insert((x, z), (tile_type, height));
 
             let render_y = height.max(SEA_LEVEL);
-            let slab_h = (0.2 + height.abs() * 0.018).clamp(0.15, 0.8);
             let pos = Vec3::new(x as f32 * TILE_SIZE, render_y, z as f32 * TILE_SIZE);
 
+            // ── Layer 0: top surface block ────────────────────────────────
             match tile_type {
-                // GLB tiles
                 TileType::Grass => {
                     commands.spawn((
                         SceneRoot(scene_grass.clone()),
@@ -206,8 +205,8 @@ fn spawn_world(
                         },
                     ));
                 }
-                // ── Cuboid tiles (no GLB yet) ───────────────────────────────
                 TileType::DeepWater => {
+                    let slab_h = (0.2 + height.abs() * 0.018).clamp(0.15, 0.8);
                     let mesh = meshes.add(Cuboid::new(TILE_SIZE, slab_h, TILE_SIZE));
                     commands.spawn((
                         Mesh3d(mesh),
@@ -221,6 +220,7 @@ fn spawn_world(
                     ));
                 }
                 TileType::Water => {
+                    let slab_h = (0.2 + height.abs() * 0.018).clamp(0.15, 0.8);
                     let mesh = meshes.add(Cuboid::new(TILE_SIZE, slab_h, TILE_SIZE));
                     commands.spawn((
                         Mesh3d(mesh),
@@ -234,6 +234,7 @@ fn spawn_world(
                     ));
                 }
                 TileType::Snow => {
+                    let slab_h = (0.2 + height.abs() * 0.018).clamp(0.15, 0.8);
                     let mesh = meshes.add(Cuboid::new(TILE_SIZE, slab_h, TILE_SIZE));
                     commands.spawn((
                         Mesh3d(mesh),
@@ -246,6 +247,26 @@ fn spawn_world(
                         },
                     ));
                 }
+            }
+
+            // ── Layers 1 & 2: soil below every tile ──────────────────────
+            //  Water gets 1 layer (submerged bed).
+            //  Everything else gets 2 layers stacked downward.
+            let sub_layers: &[f32] = match tile_type {
+                TileType::Water | TileType::DeepWater => &[-1.0],
+                _ => &[-1.0, -2.0],
+            };
+
+            for &offset in sub_layers {
+                let sub_pos = Vec3::new(
+                    x as f32 * TILE_SIZE,
+                    render_y + offset,
+                    z as f32 * TILE_SIZE,
+                );
+                commands.spawn((
+                    SceneRoot(scene_soil.clone()),
+                    Transform::from_translation(sub_pos).with_scale(Vec3::splat(1.0)),
+                ));
             }
         }
     }
