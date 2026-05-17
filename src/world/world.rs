@@ -117,12 +117,16 @@ fn spawn_world(
     asset_server: Res<AssetServer>,
     mut world_map: ResMut<WorldMap>,
 ) {
-    let perm = build_perm(42); // change seed for a different world layout
-
-    // How zoomed-in the noise is — smaller = broader mountains
+    let perm = build_perm(42);
     let noise_scale = 0.045_f32;
 
-    // Materials per biome
+    // GLB scenes — one per biome that has a model
+    let scene_grass: Handle<Scene> = asset_server.load("grass.glb#Scene0");
+    let scene_soil: Handle<Scene> = asset_server.load("soil.glb#Scene0");
+    let scene_sand: Handle<Scene> = asset_server.load("sand.glb#Scene0");
+    let scene_stone: Handle<Scene> = asset_server.load("stone.glb#Scene0");
+
+    // Cuboid materials — only used for water (deep + shallow) and snow
     let mat_deep_water = materials.add(StandardMaterial {
         base_color: Color::srgb(0.06, 0.18, 0.48),
         perceptual_roughness: 0.05,
@@ -136,26 +140,6 @@ fn spawn_world(
         alpha_mode: AlphaMode::Blend,
         ..default()
     });
-    let mat_sand = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.83, 0.76, 0.52),
-        perceptual_roughness: 0.95,
-        ..default()
-    });
-    let mat_grass = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.28, 0.62, 0.22),
-        perceptual_roughness: 0.9,
-        ..default()
-    });
-    let mat_dirt = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.46, 0.32, 0.18),
-        perceptual_roughness: 1.0,
-        ..default()
-    });
-    let mat_stone = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.50, 0.50, 0.52),
-        perceptual_roughness: 0.9,
-        ..default()
-    });
     let mat_snow = materials.add(StandardMaterial {
         base_color: Color::srgb(0.92, 0.95, 1.0),
         perceptual_roughness: 0.65,
@@ -163,11 +147,8 @@ fn spawn_world(
         ..default()
     });
 
-    let grass_scene: Handle<Scene> = asset_server.load("grass.glb#Scene0");
-
     for z in -WORLD_HALF..=WORLD_HALF {
         for x in -WORLD_HALF..=WORLD_HALF {
-            // Sample fBm and remap to [HEIGHT_MIN, HEIGHT_MAX]
             let raw = fbm(x as f32 * noise_scale, z as f32 * noise_scale, &perm).clamp(-1.0, 1.0);
 
             let height = raw * ((HEIGHT_MAX - HEIGHT_MIN) / 2.0) + (HEIGHT_MAX + HEIGHT_MIN) / 2.0;
@@ -175,52 +156,101 @@ fn spawn_world(
             let tile_type = height_to_tile(height);
             world_map.tiles.insert((x, z), (tile_type, height));
 
-            // Submerged tiles rise to sea level so water surface is flat
             let render_y = height.max(SEA_LEVEL);
-
-            // Taller slab at higher elevations for a stacked look
             let slab_h = (0.2 + height.abs() * 0.018).clamp(0.15, 0.8);
-
-            let material = match tile_type {
-                TileType::DeepWater => mat_deep_water.clone(),
-                TileType::Water => mat_water.clone(),
-                TileType::Sand => mat_sand.clone(),
-                TileType::Grass => mat_grass.clone(),
-                TileType::Dirt => mat_dirt.clone(),
-                TileType::Stone => mat_stone.clone(),
-                TileType::Snow => mat_snow.clone(),
-            };
-
             let pos = Vec3::new(x as f32 * TILE_SIZE, render_y, z as f32 * TILE_SIZE);
 
-            if tile_type == TileType::Grass {
-                // GLB IS the grass block — no cuboid, just the model
-                commands.spawn((
-                    SceneRoot(grass_scene.clone()),
-                    Transform::from_translation(pos).with_scale(Vec3::splat(1.0)), // tweak if your GLB is not 1x1 unit
-                    WorldTile {
-                        tile_type,
-                        grid_pos: (x, z),
-                        height,
-                    },
-                ));
-            } else {
-                let tile_mesh = meshes.add(Cuboid::new(TILE_SIZE, slab_h, TILE_SIZE));
-                commands.spawn((
-                    Mesh3d(tile_mesh),
-                    MeshMaterial3d(material),
-                    Transform::from_translation(pos),
-                    WorldTile {
-                        tile_type,
-                        grid_pos: (x, z),
-                        height,
-                    },
-                ));
+            match tile_type {
+                // GLB tiles
+                TileType::Grass => {
+                    commands.spawn((
+                        SceneRoot(scene_grass.clone()),
+                        Transform::from_translation(pos).with_scale(Vec3::splat(1.0)),
+                        WorldTile {
+                            tile_type,
+                            grid_pos: (x, z),
+                            height,
+                        },
+                    ));
+                }
+                TileType::Dirt => {
+                    commands.spawn((
+                        SceneRoot(scene_soil.clone()),
+                        Transform::from_translation(pos).with_scale(Vec3::splat(1.0)),
+                        WorldTile {
+                            tile_type,
+                            grid_pos: (x, z),
+                            height,
+                        },
+                    ));
+                }
+                TileType::Sand => {
+                    commands.spawn((
+                        SceneRoot(scene_sand.clone()),
+                        Transform::from_translation(pos).with_scale(Vec3::splat(1.0)),
+                        WorldTile {
+                            tile_type,
+                            grid_pos: (x, z),
+                            height,
+                        },
+                    ));
+                }
+                TileType::Stone => {
+                    commands.spawn((
+                        SceneRoot(scene_stone.clone()),
+                        Transform::from_translation(pos).with_scale(Vec3::splat(1.0)),
+                        WorldTile {
+                            tile_type,
+                            grid_pos: (x, z),
+                            height,
+                        },
+                    ));
+                }
+                // ── Cuboid tiles (no GLB yet) ───────────────────────────────
+                TileType::DeepWater => {
+                    let mesh = meshes.add(Cuboid::new(TILE_SIZE, slab_h, TILE_SIZE));
+                    commands.spawn((
+                        Mesh3d(mesh),
+                        MeshMaterial3d(mat_deep_water.clone()),
+                        Transform::from_translation(pos),
+                        WorldTile {
+                            tile_type,
+                            grid_pos: (x, z),
+                            height,
+                        },
+                    ));
+                }
+                TileType::Water => {
+                    let mesh = meshes.add(Cuboid::new(TILE_SIZE, slab_h, TILE_SIZE));
+                    commands.spawn((
+                        Mesh3d(mesh),
+                        MeshMaterial3d(mat_water.clone()),
+                        Transform::from_translation(pos),
+                        WorldTile {
+                            tile_type,
+                            grid_pos: (x, z),
+                            height,
+                        },
+                    ));
+                }
+                TileType::Snow => {
+                    let mesh = meshes.add(Cuboid::new(TILE_SIZE, slab_h, TILE_SIZE));
+                    commands.spawn((
+                        Mesh3d(mesh),
+                        MeshMaterial3d(mat_snow.clone()),
+                        Transform::from_translation(pos),
+                        WorldTile {
+                            tile_type,
+                            grid_pos: (x, z),
+                            height,
+                        },
+                    ));
+                }
             }
         }
     }
 
-    // Deep ocean floor so nothing is see-through from below
+    // Ocean floor cap so there are no gaps at the bottom
     let ocean_size = (WORLD_HALF * 2 + 4) as f32 * TILE_SIZE;
     let mat_ocean_floor = materials.add(StandardMaterial {
         base_color: Color::srgb(0.04, 0.10, 0.30),
