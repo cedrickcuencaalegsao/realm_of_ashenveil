@@ -179,6 +179,14 @@ fn setup_terrain_assets(
     terrain.scene_sand = Some(asset_server.load("sand.glb#Scene0"));
     terrain.scene_stone = Some(asset_server.load("stone.glb#Scene0"));
 
+    // Pre-warm: keep extra handles alive so assets are cached before first chunk spawns
+    terrain.warmup_handles = Some(vec![
+        asset_server.load("grass.glb#Scene0"),
+        asset_server.load("soil.glb#Scene0"),
+        asset_server.load("sand.glb#Scene0"),
+        asset_server.load("stone.glb#Scene0"),
+    ]);
+
     terrain.mat_deep_water = Some(materials.add(StandardMaterial {
         base_color: Color::srgb(0.18, 0.42, 0.58),
         perceptual_roughness: 0.05,
@@ -216,15 +224,26 @@ fn update_chunks(
     let cam_pos = cam_transform.translation;
     let cam_chunk = world_to_chunk(cam_pos.x, cam_pos.z);
 
-    // Skip re-evaluation when camera is still in the same chunk.
-    if manager.last_cam_chunk == Some(cam_chunk) {
-        return;
+    // Dead zone: only re-evaluate if camera moved at least 1 chunk away
+    if let Some((lx, lz)) = manager.last_cam_chunk {
+        let (cx, cz) = cam_chunk;
+        if (lx - cx).abs() < 1 && (lz - cz).abs() < 1 {
+            // Still process the spawn queue even if camera hasn't moved chunks
+            drain_spawn_queue(
+                &mut commands,
+                &mut meshes,
+                &terrain,
+                &mut manager,
+                cam_chunk,
+            );
+            return;
+        }
     }
     manager.last_cam_chunk = Some(cam_chunk);
 
     let (cx, cz) = cam_chunk;
 
-    // Despawn chunks that are now outside the view distance.
+    // Despawn chunks outside view distance
     let to_remove: Vec<(i32, i32)> = manager
         .loaded
         .keys()
@@ -240,16 +259,56 @@ fn update_chunks(
         }
     }
 
-    // Spawn chunks that have entered the view distance.
+    // Enqueue chunks that have entered view distance, closest first
     for dz in -VIEW_DIST..=VIEW_DIST {
         for dx in -VIEW_DIST..=VIEW_DIST {
             let chunk_coord = (cx + dx, cz + dz);
-            if manager.loaded.contains_key(&chunk_coord) {
-                continue;
+            if !manager.loaded.contains_key(&chunk_coord)
+                && !manager.spawn_queue.contains(&chunk_coord)
+            {
+                manager.spawn_queue.push_back(chunk_coord);
             }
-            let entities = spawn_chunk(&mut commands, &mut meshes, &terrain, chunk_coord);
-            manager.loaded.insert(chunk_coord, entities);
         }
+    }
+
+    // Sort queue so nearest chunks spawn first
+    manager
+        .spawn_queue
+        .make_contiguous()
+        .sort_by_key(|&(x, z)| {
+            let dx = x - cx;
+            let dz = z - cz;
+            dx * dx + dz * dz
+        });
+
+    drain_spawn_queue(
+        &mut commands,
+        &mut meshes,
+        &terrain,
+        &mut manager,
+        cam_chunk,
+    );
+}
+
+/// Spawns up to `spawns_per_frame` chunks from the front of the queue.
+fn drain_spawn_queue(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    terrain: &TerrainAssets,
+    manager: &mut ChunkManager,
+    _cam_chunk: (i32, i32),
+) {
+    let budget = manager.spawns_per_frame;
+    for _ in 0..budget {
+        let Some(coord) = manager.spawn_queue.pop_front() else {
+            break;
+        };
+        // May have been loaded already by a previous frame
+        if manager.loaded.contains_key(&coord) {
+            continue;
+        }
+        let entities = spawn_chunk(commands, meshes, terrain, coord);
+        manager.loaded.insert(coord, entities);
     }
 }
 
