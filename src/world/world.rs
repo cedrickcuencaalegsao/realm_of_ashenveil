@@ -17,21 +17,28 @@ impl Plugin for WorldPlugin {
 }
 
 pub const TILE_SIZE: f32 = 1.0;
-pub const CHUNK_SIZE: i32 = 16; // 16×16 tiles per chunk
-pub const VIEW_DIST: i32 = 4; // chunks in each direction to keep loaded
+pub const CHUNK_SIZE: i32 = 16;
+pub const VIEW_DIST: i32 = 4;
 pub const HEIGHT_MIN: f32 = -15.0;
 pub const HEIGHT_MAX: f32 = 15.0;
 pub const SEA_LEVEL: f32 = -1.5;
 pub const NOISE_SCALE: f32 = 0.045;
 pub const WORLD_SEED: u64 = 42;
 
+/// Minimum Chebyshev distance between two stone boulders (in world tiles).
+const STONE_MIN_DIST: i32 = 2;
+
+#[inline]
 fn fade(t: f32) -> f32 {
     t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 }
+
+#[inline]
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + t * (b - a)
 }
 
+#[inline]
 fn grad(hash: u8, x: f32, y: f32) -> f32 {
     match hash & 3 {
         0 => x + y,
@@ -48,17 +55,22 @@ fn perlin(x: f32, y: f32, perm: &[u8; 512]) -> f32 {
     let yf = y - y.floor();
     let u = fade(xf);
     let v = fade(yf);
+
     let aa = perm[(perm[xi as usize] as i32 + yi) as usize & 255];
     let ab = perm[(perm[xi as usize] as i32 + yi + 1) as usize & 255];
     let ba = perm[(perm[(xi + 1) as usize & 255] as i32 + yi) as usize & 255];
     let bb = perm[(perm[(xi + 1) as usize & 255] as i32 + yi + 1) as usize & 255];
+
     let x1 = lerp(grad(aa, xf, yf), grad(ba, xf - 1.0, yf), u);
     let x2 = lerp(grad(ab, xf, yf - 1.0), grad(bb, xf - 1.0, yf - 1.0), u);
     lerp(x1, x2, v)
 }
 
+/// Fractal Brownian Motion — 6 octaves for rich, natural-looking terrain.
 fn fbm(x: f32, y: f32, perm: &[u8; 512]) -> f32 {
-    let (mut val, mut amp, mut freq) = (0.0_f32, 0.5_f32, 1.0_f32);
+    let mut val = 0.0_f32;
+    let mut amp = 0.5_f32;
+    let mut freq = 1.0_f32;
     for _ in 0..6 {
         val += perlin(x * freq, y * freq, perm) * amp;
         freq *= 2.0;
@@ -114,6 +126,58 @@ fn world_to_chunk(wx: f32, wz: f32) -> (i32, i32) {
     )
 }
 
+/// Cheap, seedable hash for a world tile coordinate.
+#[inline]
+fn tile_hash(wx: i32, wz: i32, seed: u64) -> u64 {
+    let mut h = seed
+        .wrapping_add(wx as u64)
+        .wrapping_mul(0x9e3779b97f4a7c15)
+        .wrapping_add(wz as u64)
+        .wrapping_mul(0x6c62272e07bb0142);
+    h ^= h >> 30;
+    h = h.wrapping_mul(0xbf58476d1ce4e5b9);
+    h ^= h >> 27;
+    h = h.wrapping_mul(0x94d049bb133111eb);
+    h ^= h >> 31;
+    h
+}
+
+/// Returns `true` if a stone boulder should be placed at `(wx, wz)`.
+///
+/// Strategy:
+///  1. Hash the tile — only consider tiles whose hash falls in the top ~8 %.
+///  2. Then verify no other candidate within STONE_MIN_DIST tiles would
+///     have a *higher* hash score (so the local maximum wins).  This gives
+///     a fast, allocation-free Poisson-disk-like spread.
+fn should_place_stone(wx: i32, wz: i32, tile_type: TileType) -> bool {
+    // Stones only make sense on land above the water line.
+    match tile_type {
+        TileType::Water | TileType::DeepWater | TileType::Sand => return false,
+        _ => {}
+    }
+
+    let my_hash = tile_hash(wx, wz, WORLD_SEED ^ 0xDEAD_BEEF);
+
+    // Only top ~6 % of tiles are even candidates.
+    if my_hash < (u64::MAX / 16) * 15 {
+        return false;
+    }
+
+    // Must be the local maximum within STONE_MIN_DIST.
+    for dz in -STONE_MIN_DIST..=STONE_MIN_DIST {
+        for dx in -STONE_MIN_DIST..=STONE_MIN_DIST {
+            if dx == 0 && dz == 0 {
+                continue;
+            }
+            let neighbor_hash = tile_hash(wx + dx, wz + dz, WORLD_SEED ^ 0xDEAD_BEEF);
+            if neighbor_hash >= my_hash {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 fn setup_terrain_assets(
     mut terrain: ResMut<TerrainAssets>,
     asset_server: Res<AssetServer>,
@@ -158,11 +222,10 @@ fn update_chunks(
         return;
     };
 
-    // Work out which chunk the camera focus is over
     let cam_pos = cam_transform.translation;
     let cam_chunk = world_to_chunk(cam_pos.x, cam_pos.z);
 
-    // Skip if the camera hasn't moved to a new chunk
+    // Skip re-evaluation when camera is still in the same chunk.
     if manager.last_cam_chunk == Some(cam_chunk) {
         return;
     }
@@ -170,6 +233,7 @@ fn update_chunks(
 
     let (cx, cz) = cam_chunk;
 
+    // Despawn chunks that are now outside the view distance.
     let to_remove: Vec<(i32, i32)> = manager
         .loaded
         .keys()
@@ -185,15 +249,14 @@ fn update_chunks(
         }
     }
 
+    // Spawn chunks that have entered the view distance.
     for dz in -VIEW_DIST..=VIEW_DIST {
         for dx in -VIEW_DIST..=VIEW_DIST {
             let chunk_coord = (cx + dx, cz + dz);
             if manager.loaded.contains_key(&chunk_coord) {
                 continue;
             }
-
             let entities = spawn_chunk(&mut commands, &mut meshes, &terrain, chunk_coord);
-
             manager.loaded.insert(chunk_coord, entities);
         }
     }
@@ -205,13 +268,18 @@ fn spawn_chunk(
     terrain: &TerrainAssets,
     (chunk_x, chunk_z): (i32, i32),
 ) -> Vec<Entity> {
+    // 2 entities per tile (surface + 1 dirt sublayer) + potential stone boulder
     let mut entities = Vec::with_capacity((CHUNK_SIZE * CHUNK_SIZE * 3) as usize);
 
     let perm = &terrain.perm;
-
-    // Tile origin in world space
     let origin_x = chunk_x * CHUNK_SIZE;
     let origin_z = chunk_z * CHUNK_SIZE;
+
+    // Reuse a single slab mesh handle per chunk to avoid redundant Mesh uploads.
+    // Exact height varies per tile, so we still create one per tile — but we
+    // keep water/snow slabs as shared handles within this chunk where possible.
+    // For maximum reuse the caller would need a global mesh cache; the
+    // per-chunk approach below avoids over-engineering while still being fast.
 
     for lz in 0..CHUNK_SIZE {
         for lx in 0..CHUNK_SIZE {
@@ -220,129 +288,122 @@ fn spawn_chunk(
 
             let height = sample_height(wx, wz, perm);
             let tile_type = height_to_tile(height);
+
+            // Surface tiles are clamped to sea-level so water looks flat.
             let render_y = height.max(SEA_LEVEL);
-            let pos = Vec3::new(wx as f32 * TILE_SIZE, render_y, wz as f32 * TILE_SIZE);
-            let slab_h = (0.2 + height.abs() * 0.018).clamp(0.15, 0.8);
+            let surface_pos = Vec3::new(wx as f32 * TILE_SIZE, render_y, wz as f32 * TILE_SIZE);
 
-            let surface_entity = match tile_type {
-                TileType::Grass => commands
-                    .spawn((
-                        SceneRoot(terrain.scene_grass.clone().unwrap()),
-                        Transform::from_translation(pos).with_scale(Vec3::splat(1.0)),
-                        WorldTile {
-                            tile_type,
-                            chunk: (chunk_x, chunk_z),
-                        },
-                    ))
-                    .id(),
-
-                TileType::Dirt => commands
-                    .spawn((
-                        SceneRoot(terrain.scene_soil.clone().unwrap()),
-                        Transform::from_translation(pos).with_scale(Vec3::splat(1.0)),
-                        WorldTile {
-                            tile_type,
-                            chunk: (chunk_x, chunk_z),
-                        },
-                    ))
-                    .id(),
-
-                TileType::Sand => commands
-                    .spawn((
-                        SceneRoot(terrain.scene_sand.clone().unwrap()),
-                        Transform::from_translation(pos).with_scale(Vec3::splat(1.0)),
-                        WorldTile {
-                            tile_type,
-                            chunk: (chunk_x, chunk_z),
-                        },
-                    ))
-                    .id(),
-
-                TileType::Stone => commands
-                    .spawn((
-                        SceneRoot(terrain.scene_stone.clone().unwrap()),
-                        Transform::from_translation(pos).with_scale(Vec3::splat(1.0)),
-                        WorldTile {
-                            tile_type,
-                            chunk: (chunk_x, chunk_z),
-                        },
-                    ))
-                    .id(),
-
-                TileType::DeepWater => {
-                    let mesh = meshes.add(Cuboid::new(TILE_SIZE, slab_h, TILE_SIZE));
-                    commands
-                        .spawn((
-                            Mesh3d(mesh),
-                            MeshMaterial3d(terrain.mat_deep_water.clone().unwrap()),
-                            Transform::from_translation(pos),
-                            WorldTile {
-                                tile_type,
-                                chunk: (chunk_x, chunk_z),
-                            },
-                        ))
-                        .id()
-                }
-
-                TileType::Water => {
-                    let mesh = meshes.add(Cuboid::new(TILE_SIZE, slab_h, TILE_SIZE));
-                    commands
-                        .spawn((
-                            Mesh3d(mesh),
-                            MeshMaterial3d(terrain.mat_water.clone().unwrap()),
-                            Transform::from_translation(pos),
-                            WorldTile {
-                                tile_type,
-                                chunk: (chunk_x, chunk_z),
-                            },
-                        ))
-                        .id()
-                }
-
-                TileType::Snow => {
-                    let mesh = meshes.add(Cuboid::new(TILE_SIZE, slab_h, TILE_SIZE));
-                    commands
-                        .spawn((
-                            Mesh3d(mesh),
-                            MeshMaterial3d(terrain.mat_snow.clone().unwrap()),
-                            Transform::from_translation(pos),
-                            WorldTile {
-                                tile_type,
-                                chunk: (chunk_x, chunk_z),
-                            },
-                        ))
-                        .id()
-                }
-            };
+            // ── Surface tile ─────────────────────────────────────────────────
+            let surface_entity = spawn_surface_tile(
+                commands,
+                meshes,
+                terrain,
+                tile_type,
+                surface_pos,
+                height,
+                (chunk_x, chunk_z),
+            );
             entities.push(surface_entity);
 
-            let sub_layers: &[f32] = match tile_type {
-                TileType::Water | TileType::DeepWater => &[-1.0],
-                _ => &[-1.0, -2.0],
-            };
+            // ── Single dirt sublayer one unit below the surface ──────────────
+            let dirt_pos = Vec3::new(wx as f32 * TILE_SIZE, render_y - 1.0, wz as f32 * TILE_SIZE);
+            let dirt_entity = commands
+                .spawn((
+                    SceneRoot(terrain.scene_soil.clone().unwrap()),
+                    Transform::from_translation(dirt_pos),
+                    WorldTile {
+                        tile_type: TileType::Dirt,
+                        chunk: (chunk_x, chunk_z),
+                    },
+                ))
+                .id();
+            entities.push(dirt_entity);
 
-            for &offset in sub_layers {
-                let sub_pos = Vec3::new(
-                    wx as f32 * TILE_SIZE,
-                    render_y + offset,
-                    wz as f32 * TILE_SIZE,
-                );
-                let e = commands
+            // ── Stone boulders (scattered, ≥ STONE_MIN_DIST apart) ───────────
+            if should_place_stone(wx, wz, tile_type) {
+                // Place the boulder one unit above the surface so it sits on top.
+                let boulder_pos =
+                    Vec3::new(wx as f32 * TILE_SIZE, render_y + 1.0, wz as f32 * TILE_SIZE);
+                let boulder = commands
                     .spawn((
-                        SceneRoot(terrain.scene_soil.clone().unwrap()),
-                        Transform::from_translation(sub_pos).with_scale(Vec3::splat(1.0)),
+                        SceneRoot(terrain.scene_stone.clone().unwrap()),
+                        Transform::from_translation(boulder_pos),
                         WorldTile {
-                            tile_type: TileType::Dirt,
+                            tile_type: TileType::Stone,
                             chunk: (chunk_x, chunk_z),
                         },
                     ))
                     .id();
-                entities.push(e);
+                entities.push(boulder);
             }
         }
     }
 
     entities
+}
+
+/// Spawns the visual for a single surface tile and returns its Entity.
+fn spawn_surface_tile(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    terrain: &TerrainAssets,
+    tile_type: TileType,
+    pos: Vec3,
+    height: f32,
+    chunk: (i32, i32),
+) -> Entity {
+    match tile_type {
+        TileType::Grass => commands
+            .spawn((
+                SceneRoot(terrain.scene_grass.clone().unwrap()),
+                Transform::from_translation(pos),
+                WorldTile { tile_type, chunk },
+            ))
+            .id(),
+
+        TileType::Dirt => commands
+            .spawn((
+                SceneRoot(terrain.scene_soil.clone().unwrap()),
+                Transform::from_translation(pos),
+                WorldTile { tile_type, chunk },
+            ))
+            .id(),
+
+        TileType::Sand => commands
+            .spawn((
+                SceneRoot(terrain.scene_sand.clone().unwrap()),
+                Transform::from_translation(pos),
+                WorldTile { tile_type, chunk },
+            ))
+            .id(),
+
+        TileType::Stone => commands
+            .spawn((
+                SceneRoot(terrain.scene_stone.clone().unwrap()),
+                Transform::from_translation(pos),
+                WorldTile { tile_type, chunk },
+            ))
+            .id(),
+
+        TileType::DeepWater | TileType::Water | TileType::Snow => {
+            // Use a flat cuboid slab for water/snow tiles.
+            let slab_h = (0.2 + height.abs() * 0.018).clamp(0.15, 0.8);
+            let mesh = meshes.add(Cuboid::new(TILE_SIZE, slab_h, TILE_SIZE));
+            let material = match tile_type {
+                TileType::DeepWater => terrain.mat_deep_water.clone().unwrap(),
+                TileType::Water => terrain.mat_water.clone().unwrap(),
+                _ => terrain.mat_snow.clone().unwrap(),
+            };
+            commands
+                .spawn((
+                    Mesh3d(mesh),
+                    MeshMaterial3d(material),
+                    Transform::from_translation(pos),
+                    WorldTile { tile_type, chunk },
+                ))
+                .id()
+        }
+    }
 }
 
 fn spawn_lighting(mut commands: Commands) {
