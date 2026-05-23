@@ -1,4 +1,5 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(dead_code)]
 pub enum TileType {
     DeepWater, // height < -8
     Water,     // -8 <= height < -2

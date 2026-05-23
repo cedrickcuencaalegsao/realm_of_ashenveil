@@ -160,8 +160,8 @@ fn should_place_stone(wx: i32, wz: i32, tile_type: TileType) -> bool {
             if dx == 0 && dz == 0 {
                 continue;
             }
-            let neighbor_hash = tile_hash(wx + dx, wz + dz, WORLD_SEED ^ 0xDEAD_BEEF);
-            if neighbor_hash >= my_hash {
+            // let neighbor_hash = tile_hash(wx + dx, wz + dz, WORLD_SEED ^ 0xDEAD_BEEF);
+            if my_hash < (u64::MAX / 32) * 31 {
                 return false;
             }
         }
@@ -400,21 +400,21 @@ fn spawn_surface_tile(
 fn spawn_lighting(mut commands: Commands) {
     commands.spawn((
         DirectionalLight {
-            color: Color::srgb(1.0, 0.96, 0.85),
-            illuminance: 20_000.0,
+            color: Color::srgb(1.0, 0.88, 0.70),
+            illuminance: 12_000.0,
             shadows_enabled: true,
             ..default()
         },
         Transform::from_rotation(Quat::from_euler(
             EulerRot::XYZ,
-            (-55.0_f32).to_radians(),
-            (40.0_f32).to_radians(),
+            (-35.0_f32).to_radians(),
+            (30.0_f32).to_radians(),
             0.0,
         )),
     ));
 
     commands.insert_resource(AmbientLight {
-        color: Color::srgb(0.55, 0.65, 0.88),
-        brightness: 450.0,
+        color: Color::srgb(0.72, 0.68, 0.55),
+        brightness: 600.0,
     });
 }
