@@ -19,8 +19,8 @@ impl Plugin for WorldPlugin {
 pub const TILE_SIZE: f32 = 1.0;
 pub const CHUNK_SIZE: i32 = 16;
 pub const VIEW_DIST: i32 = 4;
-pub const HEIGHT_MIN: f32 = -15.0;
-pub const HEIGHT_MAX: f32 = 15.0;
+pub const HEIGHT_MIN: f32 = -8.0;
+pub const HEIGHT_MAX: f32 = 8.0;
 pub const SEA_LEVEL: f32 = -1.5;
 pub const NOISE_SCALE: f32 = 0.045;
 pub const WORLD_SEED: u64 = 42;
@@ -71,7 +71,7 @@ fn fbm(x: f32, y: f32, perm: &[u8; 512]) -> f32 {
     let mut val = 0.0_f32;
     let mut amp = 0.5_f32;
     let mut freq = 1.0_f32;
-    for _ in 0..6 {
+    for _ in 0..4 {
         val += perlin(x * freq, y * freq, perm) * amp;
         freq *= 2.0;
         amp *= 0.5;
@@ -104,18 +104,16 @@ fn sample_height(wx: i32, wz: i32, perm: &[u8; 512]) -> f32 {
 fn height_to_tile(h: f32) -> TileType {
     if h < -8.0 {
         TileType::DeepWater
-    } else if h < -2.0 {
+    } else if h < -1.5 {
         TileType::Water
-    } else if h < 0.0 {
+    } else if h < 0.5 {
         TileType::Sand
-    } else if h < 6.0 {
+    } else if h < 5.5 {
         TileType::Grass
-    } else if h < 10.0 {
+    } else if h < 7.0 {
         TileType::Dirt
-    } else if h < 13.0 {
-        TileType::Stone
     } else {
-        TileType::Snow
+        TileType::Stone
     }
 }
 
@@ -142,13 +140,6 @@ fn tile_hash(wx: i32, wz: i32, seed: u64) -> u64 {
     h
 }
 
-/// Returns `true` if a stone boulder should be placed at `(wx, wz)`.
-///
-/// Strategy:
-///  1. Hash the tile — only consider tiles whose hash falls in the top ~8 %.
-///  2. Then verify no other candidate within STONE_MIN_DIST tiles would
-///     have a *higher* hash score (so the local maximum wins).  This gives
-///     a fast, allocation-free Poisson-disk-like spread.
 fn should_place_stone(wx: i32, wz: i32, tile_type: TileType) -> bool {
     // Stones only make sense on land above the water line.
     match tile_type {
@@ -189,13 +180,13 @@ fn setup_terrain_assets(
     terrain.scene_stone = Some(asset_server.load("stone.glb#Scene0"));
 
     terrain.mat_deep_water = Some(materials.add(StandardMaterial {
-        base_color: Color::srgb(0.06, 0.18, 0.48),
+        base_color: Color::srgb(0.18, 0.42, 0.58),
         perceptual_roughness: 0.05,
         reflectance: 0.9,
         ..default()
     }));
     terrain.mat_water = Some(materials.add(StandardMaterial {
-        base_color: Color::srgba(0.16, 0.42, 0.72, 0.82),
+        base_color: Color::srgba(0.28, 0.62, 0.72, 0.78),
         perceptual_roughness: 0.05,
         reflectance: 0.8,
         alpha_mode: AlphaMode::Blend,
