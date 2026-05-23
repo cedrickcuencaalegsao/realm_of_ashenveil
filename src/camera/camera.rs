@@ -13,7 +13,7 @@ impl Plugin for CameraPlugin {
 fn spawn_isometric_camera(mut commands: Commands) {
     // Isometric: 45° yaw, 35.264° pitch (true isometric is ~35.26°, we use 35°)
     let focus = Vec3::ZERO;
-    let distance = 30.0;
+    let distance = 30.0; // camera distance from focus
 
     // Yaw 45 degrees, pitch 35 degrees
     let yaw = 45.0_f32.to_radians();
