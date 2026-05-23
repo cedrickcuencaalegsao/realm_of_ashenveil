@@ -178,6 +178,7 @@ fn setup_terrain_assets(
     terrain.scene_soil = Some(asset_server.load("soil.glb#Scene0"));
     terrain.scene_sand = Some(asset_server.load("sand.glb#Scene0"));
     terrain.scene_stone = Some(asset_server.load("stone.glb#Scene0"));
+    terrain.scene_weed = Some(asset_server.load("weed.glb#Scene0"));
 
     // Pre-warm: keep extra handles alive so assets are cached before first chunk spawns
     terrain.warmup_handles = Some(vec![
@@ -185,6 +186,7 @@ fn setup_terrain_assets(
         asset_server.load("soil.glb#Scene0"),
         asset_server.load("sand.glb#Scene0"),
         asset_server.load("stone.glb#Scene0"),
+        asset_server.load("weed.glb#Scene0"),
     ]);
 
     terrain.mat_deep_water = Some(materials.add(StandardMaterial {
@@ -290,6 +292,20 @@ fn update_chunks(
     );
 }
 
+fn should_place_weed(wx: i32, wz: i32, tile_type: TileType) -> bool {
+    if tile_type != TileType::Grass {
+        return false;
+    }
+
+    let my_hash = tile_hash(wx, wz, WORLD_SEED ^ 0xBEEF_CAFE);
+
+    if my_hash < (u64::MAX / 4) * 3 {
+        return false;
+    }
+
+    true
+}
+
 /// Spawns up to `spawns_per_frame` chunks from the front of the queue.
 fn drain_spawn_queue(
     commands: &mut Commands,
@@ -385,6 +401,23 @@ fn spawn_chunk(
                     ))
                     .id();
                 entities.push(boulder);
+            }
+
+            // ── Weeds (scattered on grass) ───────────────────────────────────
+            if should_place_weed(wx, wz, tile_type) {
+                let weed_pos =
+                    Vec3::new(wx as f32 * TILE_SIZE, render_y + 1.0, wz as f32 * TILE_SIZE);
+                let weed = commands
+                    .spawn((
+                        SceneRoot(terrain.scene_weed.clone().unwrap()),
+                        Transform::from_translation(weed_pos),
+                        WorldTile {
+                            tile_type: TileType::Grass,
+                            chunk: (chunk_x, chunk_z),
+                        },
+                    ))
+                    .id();
+                entities.push(weed);
             }
         }
     }

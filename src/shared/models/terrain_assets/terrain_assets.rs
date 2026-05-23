@@ -10,6 +10,7 @@ pub struct TerrainAssets {
     pub mat_water: Option<Handle<StandardMaterial>>,
     pub mat_snow: Option<Handle<StandardMaterial>>,
     pub warmup_handles: Option<Vec<Handle<Scene>>>,
+    pub scene_weed: Option<Handle<Scene>>,
     pub perm: [u8; 512],
 }
 
@@ -24,6 +25,7 @@ impl Default for TerrainAssets {
             mat_water: None,
             mat_snow: None,
             warmup_handles: None,
+            scene_weed: None,
             perm: [0u8; 512],
         }
     }
